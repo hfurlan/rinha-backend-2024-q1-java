@@ -1,8 +1,9 @@
 package com.github.hfurlan.rinha;
 
+import java.net.URI;
 import java.util.HashMap;
 
-public class JSonUtil {
+public class HttpUtil {
 
     public static Transacao parseRequest(byte[] request) {
         var params = new HashMap<String, String>();
@@ -23,8 +24,18 @@ public class JSonUtil {
                                         i = w + 1;
                                         continue outer;
                                     } else {
-                                        if (chaveStr.equals("tipo") || chaveStr.equals("descricao")) {
+                                        if (chaveStr.equals("valor")) {
+                                            if ((request[w] < 48 || request[w] > 57) && request[w] != 32) {
+                                                throw new IllegalArgumentException("valor invalido");
+                                            }
+                                            if (request[w] >= 48 && request[w] <= 57) {
+                                                valor.append((char)request[w]);
+                                            }
+                                        } else {
                                             for (int y = w + 1; y < request.length; y++) {
+                                                if ((char)request[y] == ',' || (char)request[y] == '}') {
+                                                    throw new IllegalArgumentException("nao achou aspas para o campo " + chaveStr);
+                                                }
                                                 if ((char) request[y] == '"') {
                                                     for (int z = y + 1; z < request.length; z++) {
                                                         if ((char) request[z] == '"') {
@@ -36,10 +47,6 @@ public class JSonUtil {
                                                         }
                                                     }
                                                 }
-                                            }
-                                        } else {
-                                            if (request[w] >= 48 && request[w] <= 57) {
-                                                valor.append((char)request[w]);
                                             }
                                         }
                                     }
@@ -62,5 +69,23 @@ public class JSonUtil {
         }catch (Exception e) {
             throw new IllegalArgumentException("valor invalido");
         }
+    }
+
+    public static Object[] getServiceAndIdFromUri(URI uri){
+        String path = uri.getPath();
+        String servico = null;
+        int ultimoIndex = -1;
+        for (int i = path.length() - 1; i > 0; i--) {
+            if (path.charAt(i) == '/') {
+                if (servico == null) {
+                    servico = path.substring(i + 1);
+                    ultimoIndex = i;
+                } else {
+                    Integer id = Integer.parseInt(path.substring(i + 1, ultimoIndex));
+                    return new Object[]{servico, id};
+                }
+            }
+        }
+        throw new IllegalArgumentException("URI invalida " + uri);
     }
 }

@@ -5,7 +5,7 @@ networks:
 
 services:
   api01:
-    #image: hfurlan/rinha-backend-2024-q1:1.0.0-go
+    #image: hfurlan/rinha-backend-2024-q1:1.0.0-java
     image: rinha-backend-2024-q1-java
     hostname: api01
     environment:
@@ -28,11 +28,11 @@ services:
     deploy:
       resources:
         limits:
-          cpus: "3.5"
+          cpus: "0.35"
           memory: "100MB"
 
   api02:
-    #image: hfurlan/rinha-backend-2024-q1:1.0.0-go
+    #image: hfurlan/rinha-backend-2024-q1:1.0.0-java
     image: rinha-backend-2024-q1-java
     hostname: api02
     environment:
@@ -54,7 +54,7 @@ services:
     deploy:
       resources:
         limits:
-          cpus: "3.5"
+          cpus: "0.35"
           memory: "100MB"
  
   nginx:
@@ -100,7 +100,6 @@ services:
           # um exemplo – distribua como quiser.
           cpus: "0.5"
           memory: "300MB"
-
 
   # pgadmin:
   #   container_name: pgadmin4_container

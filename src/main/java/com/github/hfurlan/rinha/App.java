@@ -9,8 +9,8 @@ import java.io.OutputStream;
 import java.net.InetSocketAddress;
 import java.sql.*;
 import java.time.LocalDateTime;
+import java.util.HashMap;
 import java.util.Map;
-import java.util.Random;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ThreadPoolExecutor;
@@ -24,10 +24,9 @@ public class App {
     private int dbMaxConnections;
     private int httpPort;
     private int httpMaxThreads;
-    private Random random = new Random();
     private Map<Integer, Integer> clientesLimites = new ConcurrentHashMap<>();
 
-    private Connection[] conns;
+    private Map<String, Connection> conns;
 
     public App() throws SQLException {
         dbUsername = System.getenv("DB_USERNAME");
@@ -59,9 +58,9 @@ public class App {
         System.out.println("VERSAO:0.0.1-SNAPSHOT");
 
         String url = "jdbc:postgresql://"+dbHostname+"/"+dbName+"?ssl=false";
-        conns = new Connection[dbMaxConnections];
-        for (int i = 0; i < conns.length; i++) {
-            conns[i] = DriverManager.getConnection(url, dbUsername, dbPassword);
+        conns = new HashMap<>();
+        for (int i = 1; i <= dbMaxConnections; i++) {
+            conns.put("pool-1-thread-" + i, DriverManager.getConnection(url, dbUsername, dbPassword));
         }
     }
 
@@ -84,17 +83,19 @@ public class App {
             @Override
             public void handle(HttpExchange exchange) throws IOException {
                 String method = exchange.getRequestMethod();
-                String[] uriParts = exchange.getRequestURI().toString().split("[/]");
                 try {
-                    if("GET".equals(method) && uriParts[3].equals("extrato")) {
-                        int id = Integer.parseInt(uriParts[2]);
-                        handleExtrato(exchange, id);
-                    } else if("POST".equals(method) && uriParts[3].equals("transacoes")) {
-                        int id = Integer.parseInt(uriParts[2]);
+                    Object[] serviceAndIdStr = HttpUtil.getServiceAndIdFromUri(exchange.getRequestURI());
+                    String service = (String)serviceAndIdStr[0];
+                    Integer id = (Integer)serviceAndIdStr[1];
+                    if (service.equals("transacoes") && "POST".equals(method)) {
                         handleTransacoes(exchange, id);
+                    } else if (service.equals("extrato") && "GET".equals(method)) {
+                        handleExtrato(exchange, id);
                     } else {
                         responseError(exchange, 404, "Pagina nao encontrada");
                     }
+                } catch (IllegalArgumentException e) {
+                    responseError(exchange, 404, e.getMessage());
                 } catch (Exception e) {
                     responseError(exchange, 500, e.getMessage());
                 }
@@ -126,7 +127,7 @@ public class App {
         byte[] request = exchange.getRequestBody().readAllBytes();
         Transacao transacao = null;
         try {
-            transacao = JSonUtil.parseRequest(request);
+            transacao = HttpUtil.parseRequest(request);
         } catch (Exception e) {
             responseError(exchange, 422, e.getMessage());
             return;
@@ -145,38 +146,41 @@ public class App {
             return;
         }
 
+        boolean rsClosed = false;
         int saldo = -1;
-        PreparedStatement ps = null;
+        Statement st = null;
         ResultSet rs = null;
         try {
+            StringBuilder sql = new StringBuilder(100);
             if (transacao.tipo == 'c') {
-                ps = getConnection().prepareStatement("select creditar(?, ?, ?, ?)");
+                sql.append("select creditar(");
             } else {
-                ps = getConnection().prepareStatement("select debitar(?, ?, ?, ?)");
+                sql.append("select debitar(");
             }
-            ps.setInt(1, id);
-            ps.setInt(2, transacao.valor);
-            ps.setString(3, "" + transacao.tipo);
-            ps.setString(4, transacao.descricao);
-            rs = ps.executeQuery();
+            sql.append(id).append(",").append(transacao.valor).append(",'").append(transacao.tipo).append("','").append(transacao.descricao).append("')");
+            st = getConnection().createStatement();
+            rs = st.executeQuery(sql.toString());
             if (rs.next()) {
                 saldo = rs.getInt(1);
             }
         } catch (Exception e) {
-            closeQuiet(rs, ps);
-            if (e.getMessage().contains("not-null constraint")) {
-                responseError(exchange, 404, "Cliente nao encontrado");
-            } else if (e.getMessage().contains("check")) {
+            closeQuiet(rs, st);
+            rsClosed = true;
+            if (e.getMessage().contains("check")) {
                 responseError(exchange, 422, "Sem saldo");
+            } else if (e.getMessage().contains("not-null constraint")) {
+                responseError(exchange, 404, "Cliente nao encontrado");
             } else {
                 responseError(exchange, 500, e.getMessage());
             }
             return;
         } finally {
-            closeQuiet(rs, ps);
+            if (!rsClosed) {
+                closeQuiet(rs, st);
+            }
         }
 
-        var json = new StringBuilder();
+        var json = new StringBuilder(100);
         json.append("{\"limite\":");
         json.append(limite);
         json.append(",\"saldo\":");
@@ -206,6 +210,23 @@ public class App {
         }
     }
 
+    protected void closeQuiet(ResultSet rs, Statement st) {
+        try {
+            if (rs != null) {
+                rs.close();
+            }
+        } catch (SQLException e) {
+            e.printStackTrace();
+        }
+        try {
+            if (st != null) {
+                st.close();
+            }
+        } catch (SQLException e) {
+            e.printStackTrace();
+        }
+    }
+
     protected void handleExtrato(HttpExchange exchange, int id) throws IOException, SQLException {
         Integer limite = obterClienteLimiteCache(id);
         if (limite == null) {
@@ -213,14 +234,15 @@ public class App {
             return;
         }
 
-        var json = new StringBuilder("{\"saldo\":{\"total\":");
+        boolean rsClosed = false;
+        var json = new StringBuilder(1200);
+        json.append("{\"saldo\":{\"total\":");
         var dataExtratoStr = LocalDateTime.now().toString();
-        PreparedStatement ps = null;
+        Statement st = null;
         ResultSet rs = null;
         try {
-            ps = getConnection().prepareStatement("select * from saldos where cliente_id = ?");
-            ps.setInt(1, id);
-            rs = ps.executeQuery();
+            st = getConnection().createStatement();
+            rs = st.executeQuery("select * from saldos where cliente_id = " + id);
             if (rs.next()) {
                 json.append(rs.getInt("saldo"));
                 json.append(",\"data_extrato\":\"");
@@ -246,25 +268,29 @@ public class App {
                     }
                 }
                 json.append("]}");
+                closeQuiet(rs, st);
+                rsClosed = true;
                 OutputStream outputStream = exchange.getResponseBody();
                 exchange.sendResponseHeaders(200, json.length());
                 outputStream.write(json.toString().getBytes());
                 outputStream.flush();
                 outputStream.close();
             } else {
-                closeQuiet(rs, ps);
+                closeQuiet(rs, st);
                 responseError(exchange, 404, "Cliente nao encontrado");
             }
         } catch (Exception e) {
-            closeQuiet(rs, ps);
+            closeQuiet(rs, st);
             responseError(exchange, 500, e.getMessage());
         } finally {
-            closeQuiet(rs, ps);
+            if (!rsClosed) {
+                closeQuiet(rs, st);
+            }
         }
     }
 
     private Connection getConnection() {
-        return conns[random.nextInt(dbMaxConnections)];
+        return conns.get(Thread.currentThread().getName());
     }
 
     protected Integer obterClienteLimiteCache(int id) throws SQLException {
