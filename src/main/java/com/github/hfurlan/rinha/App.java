@@ -125,7 +125,7 @@ public class App {
         }
 
         byte[] request = exchange.getRequestBody().readAllBytes();
-        Transacao transacao = null;
+        Transacao transacao;
         try {
             transacao = HttpUtil.parseRequest(request);
         } catch (Exception e) {
@@ -148,23 +148,23 @@ public class App {
 
         boolean rsClosed = false;
         int saldo = -1;
-        Statement st = null;
+        PreparedStatement ps = null;
         ResultSet rs = null;
         try {
-            StringBuilder sql = new StringBuilder(100);
             if (transacao.tipo == 'c') {
-                sql.append("select creditar(");
+                ps = getConnection().prepareStatement("select creditar(?,?,?)");
             } else {
-                sql.append("select debitar(");
+                ps = getConnection().prepareStatement("select debitar(?,?,?)");
             }
-            sql.append(id).append(",").append(transacao.valor).append(",'").append(transacao.tipo).append("','").append(transacao.descricao).append("')");
-            st = getConnection().createStatement();
-            rs = st.executeQuery(sql.toString());
+            ps.setInt(1, id);
+            ps.setInt(2, transacao.valor);
+            ps.setString(3, transacao.descricao);
+            rs = ps.executeQuery();
             if (rs.next()) {
                 saldo = rs.getInt(1);
             }
         } catch (Exception e) {
-            closeQuiet(rs, st);
+            closeQuiet(rs, ps);
             rsClosed = true;
             if (e.getMessage().contains("check")) {
                 responseError(exchange, 422, "Sem saldo");
@@ -176,7 +176,7 @@ public class App {
             return;
         } finally {
             if (!rsClosed) {
-                closeQuiet(rs, st);
+                closeQuiet(rs, ps);
             }
         }
 
@@ -235,40 +235,40 @@ public class App {
         }
 
         boolean rsClosed = false;
-        var json = new StringBuilder(1200);
-        json.append("{\"saldo\":{\"total\":");
+        var json = new StringBuilder(1200).append("{\"saldo\":{\"total\":");
         var dataExtratoStr = LocalDateTime.now().toString();
-        Statement st = null;
+        PreparedStatement ps = null;
         ResultSet rs = null;
         try {
-            st = getConnection().createStatement();
-            rs = st.executeQuery("select * from saldos where cliente_id = " + id);
+            ps = getConnection().prepareStatement("select * from saldos where cliente_id = ?");
+            ps.setInt(1, id);
+            rs = ps.executeQuery();
             if (rs.next()) {
-                json.append(rs.getInt("saldo"));
-                json.append(",\"data_extrato\":\"");
-                json.append(dataExtratoStr);
-                json.append("\",\"limite\":");
-                json.append(limite);
-                json.append("},\"ultimas_transacoes\":[");
+                json.append(rs.getInt("saldo"))
+                    .append(",\"data_extrato\":\"")
+                    .append(dataExtratoStr)
+                    .append("\",\"limite\":")
+                    .append(limite)
+                    .append("},\"ultimas_transacoes\":[");
                 for (int i = 0; i < 10; i++) {
                     String transacao0Desccricao = rs.getString("transacao_"+i+"_descricao");
                     if (transacao0Desccricao != null) {
                         if (i > 0 ) {
                             json.append(",");
                         }
-                        json.append("{\"valor\":");
-                        json.append(rs.getInt("transacao_"+i+"_valor"));
-                        json.append(",\"tipo\":\"");
-                        json.append(rs.getString("transacao_"+i+"_tipo"));
-                        json.append("\",\"descricao\":\"");
-                        json.append(transacao0Desccricao);
-                        json.append("\",\"realizada_em\":\"");
-                        json.append(rs.getString("transacao_"+i+"_data_hora_inclusao"));
-                        json.append("\"}");
+                        json.append("{\"valor\":")
+                            .append(rs.getInt("transacao_"+i+"_valor"))
+                            .append(",\"tipo\":\"")
+                            .append(rs.getString("transacao_"+i+"_tipo"))
+                            .append("\",\"descricao\":\"")
+                            .append(transacao0Desccricao)
+                            .append("\",\"realizada_em\":\"")
+                            .append(rs.getString("transacao_"+i+"_data_hora_inclusao"))
+                            .append("\"}");
                     }
                 }
                 json.append("]}");
-                closeQuiet(rs, st);
+                closeQuiet(rs, ps);
                 rsClosed = true;
                 OutputStream outputStream = exchange.getResponseBody();
                 exchange.sendResponseHeaders(200, json.length());
@@ -276,15 +276,15 @@ public class App {
                 outputStream.flush();
                 outputStream.close();
             } else {
-                closeQuiet(rs, st);
+                closeQuiet(rs, ps);
                 responseError(exchange, 404, "Cliente nao encontrado");
             }
         } catch (Exception e) {
-            closeQuiet(rs, st);
+            closeQuiet(rs, ps);
             responseError(exchange, 500, e.getMessage());
         } finally {
             if (!rsClosed) {
-                closeQuiet(rs, st);
+                closeQuiet(rs, ps);
             }
         }
     }
